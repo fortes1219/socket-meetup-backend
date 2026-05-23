@@ -4,3 +4,38 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+# ─── Async runtime ───
+tokio = { version = "=1.52", features = ["macros", "rt-multi-thread", "signal", "time", "sync"] }
+
+# ─── HTTP server ───
+axum = "=0.8"
+tower-http = { version = "=0.6", features = ["cors", "trace"] }
+
+# ─── Socket.IO ───
+socketioxide = "=0.18.3"
+
+# ─── Database (PostgreSQL) ───
+sqlx = { version = "=0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "macros"] }
+
+# ─── Binance upstream ───
+reqwest = { version = "=0.12", default-features = false, features = ["rustls-tls", "json"] }
+tokio-tungstenite = { version = "=0.28", features = ["rustls-tls-webpki-roots"] }
+
+# ─── IDs / time ───
+uuid = { version = "=1", features = ["v7", "serde"] }
+chrono = { version = "=0.4", features = ["serde"] }
+
+# ─── Serialization ───
+serde = { version = "=1", features = ["derive"] }
+serde_json = "=1"
+
+# ─── Logging ───
+tracing = "=0.1"
+tracing-subscriber = { version = "=0.3", features = ["env-filter"] }
+
+# ─── Error handling ───
+anyhow = "=1"
+thiserror = "=1"
+
+# ─── .env loader ───
+dotenvy = "=0.15"
