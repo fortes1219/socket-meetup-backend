@@ -48,3 +48,8 @@ logs/
 tmp/
 *.bak
 *.swp
+
+
+# Added by cargo
+
+/target
