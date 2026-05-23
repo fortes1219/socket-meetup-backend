@@ -1,0 +1,50 @@
+# ─── Internal docs (do NOT push to public repo) ───
+CLAUDE.md
+ARCHITECTURE.md
+.claude/
+
+# ─── Secrets ───────────────────────────────
+.env
+.env.*
+# .env.example 是唯一允許進 git 的 env 檔(合約)
+!.env.example
+.envrc
+*.pem
+*.key
+*.p12
+
+# ─── Rust ─────────────────────────────────
+target/
+**/*.rs.bk
+# sqlx prepare 的 query cache,含 SQL 字串 = 業務情報
+.sqlx/
+*.db
+*.sqlite
+*.sqlite-journal
+
+# ─── Frontend(本 repo 暫無,但模板先擺好)─────
+node_modules/
+dist/
+.vite/
+.cache/
+*.tsbuildinfo
+
+# ─── Docker / Compose ─────────────────────
+# 本機覆寫常含 admin token / 路徑
+docker-compose.override.yml
+.docker/
+
+# ─── IDE / OS ─────────────────────────────
+# VS Code 個人設定可能含路徑 / token / debug env
+.vscode/settings.json
+.vscode/launch.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# ─── Logs / Tmp ───────────────────────────
+*.log
+logs/
+tmp/
+*.bak
+*.swp
