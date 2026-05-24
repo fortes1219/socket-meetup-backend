@@ -1,19 +1,41 @@
 services:
+  rust-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: socket-meetup-rust-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # container 內 host 是 service name "postgres",不是 localhost;
+      # 從同樣 POSTGRES_* env 組出 DATABASE_URL,確保跟 postgres service 對齊
+      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-demo}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-replace-with-strong-random-secret}
+      RUST_LOG: ${RUST_LOG:-info,rust_api=debug}
+      BINANCE_REST_BASE: ${BINANCE_REST_BASE:-https://api.binance.com}
+      BINANCE_WS_BASE: ${BINANCE_WS_BASE:-wss://stream.binance.com:9443}
+    ports:
+      - "3000:3000"
+
   postgres:
     image: postgres:16-alpine
     container_name: socket-meetup-postgres
     restart: unless-stopped
     environment:
-      # dev defaults; 必須對齊 .env 的 DATABASE_URL
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: demo
+      # dev fallback default;production 由部署環境 .env 覆寫
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-demo}
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d demo"]
+      test:
+        - CMD-SHELL
+        - pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-demo}
       interval: 5s
       timeout: 3s
       retries: 10
