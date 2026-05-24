@@ -1,8 +1,15 @@
 use std::net::SocketAddr;
 
 use anyhow::Result;
-use axum::{Json, Router, routing::get};
+use axum::{
+  Json, Router,
+  extract::FromRef,
+  response::Html,
+  routing::get,
+};
 use serde_json::json;
+use socketioxide::SocketIo;
+use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
 use tokio::net::TcpListener;
 use tokio::signal;
@@ -13,20 +20,40 @@ mod api;
 mod binance;
 mod db;
 mod error;
+mod socket;
+
+/// Composite state(handler 透過 FromRef 分別 extract `State<PgPool>` 或 `State<SocketIo>`)。
+#[derive(Clone)]
+struct AppState {
+  pool: PgPool,
+  io: SocketIo,
+}
+
+impl FromRef<AppState> for PgPool {
+  fn from_ref(state: &AppState) -> Self {
+    state.pool.clone()
+  }
+}
+
+impl FromRef<AppState> for SocketIo {
+  fn from_ref(state: &AppState) -> Self {
+    state.io.clone()
+  }
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
   // Load .env(本機 dev;production env 由外部注入,沒 .env 不 panic)
   dotenvy::dotenv().ok();
 
-  // Tracing(讀 RUST_LOG,fallback info + sqlx warn)
+  // Tracing(讀 RUST_LOG,fallback info + sqlx warn + socketio/engineio warn 抑制 noise)
   tracing_subscriber::fmt()
-    .with_env_filter(
-      EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,sqlx=warn")),
-    )
+    .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+      EnvFilter::new("info,sqlx=warn,socketioxide=warn,engineioxide=warn")
+    }))
     .init();
 
-  // Postgres pool(啟動時即時連接,連不上 fail fast)
+  // Postgres pool
   let database_url = std::env::var("DATABASE_URL")
     .map_err(|_| anyhow::anyhow!("DATABASE_URL not set; check .env"))?;
   let pool = PgPoolOptions::new()
@@ -35,13 +62,18 @@ async fn main() -> Result<()> {
     .await?;
   tracing::info!("connected to postgres");
 
-  // ─── Phase A-1/A-2: Binance REST + WS ingestion ───
+  // Binance bases
   let rest_base = std::env::var("BINANCE_REST_BASE")
     .map_err(|_| anyhow::anyhow!("BINANCE_REST_BASE not set; check .env"))?;
   let ws_base = std::env::var("BINANCE_WS_BASE")
     .map_err(|_| anyhow::anyhow!("BINANCE_WS_BASE not set; check .env"))?;
 
-  // Task A: REST 撈 500 筆當 backfill,落庫(一次性)
+  // ─── Socket.IO layer ───
+  let (socketio_layer, io) = SocketIo::new_layer();
+  socket::register_namespaces(&io);
+
+  // ─── Binance ingestion tasks ───
+  // Task A: REST 撈 500 筆 backfill(一次性)
   let rest_pool = pool.clone();
   tokio::spawn(async move {
     let client = reqwest::Client::new();
@@ -69,22 +101,27 @@ async fn main() -> Result<()> {
     }
   });
 
-  // Task B: WS subscribe btcusdt@kline_1m,closed kline 自動 upsert(long-running)
+  // Task B: WS subscribe btcusdt@kline_1m,closed kline upsert + emit `kline:closed`
   let ws_pool = pool.clone();
+  let ws_io = io.clone();
   tokio::spawn(async move {
     if let Err(e) =
-      binance::ws::subscribe_kline_stream(ws_pool, &ws_base, "BTCUSDT", "1m").await
+      binance::ws::subscribe_kline_stream(ws_pool, ws_io, &ws_base, "BTCUSDT", "1m").await
     {
       tracing::error!(?e, "WS stream failed");
     }
   });
 
-  // ─── HTTP server(Phase A-0 + A-2 /api/v1/klines)───
+  // ─── HTTP server ───
+  let app_state = AppState { pool, io };
+
   let app = Router::new()
     .route("/healthz", get(healthz))
     .route("/api/v1/klines", get(api::klines::get_klines))
+    .route("/socket-test", get(socket_test_page))
+    .layer(socketio_layer)
     .layer(TraceLayer::new_for_http())
-    .with_state(pool);
+    .with_state(app_state);
 
   let addr: SocketAddr = "0.0.0.0:3000".parse()?;
   let listener = TcpListener::bind(addr).await?;
@@ -99,6 +136,11 @@ async fn main() -> Result<()> {
 
 async fn healthz() -> Json<serde_json::Value> {
   Json(json!({ "status": "ok" }))
+}
+
+/// Browser test page,demo 用,let me open http://localhost:3000/socket-test。
+async fn socket_test_page() -> Html<&'static str> {
+  Html(include_str!("../test/socket-client.html"))
 }
 
 async fn shutdown_signal() {
