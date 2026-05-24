@@ -15,7 +15,8 @@ tower-http = { version = "=0.6", features = ["cors", "trace"] }
 socketioxide = "=0.18.3"
 
 # ─── Database (PostgreSQL) ───
-sqlx = { version = "=0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "macros"] }
+sqlx = { version = "=0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "macros", "bigdecimal"] }
+bigdecimal = { version = "=0.4", features = ["serde"] }
 
 # ─── Binance upstream ───
 reqwest = { version = "=0.12", default-features = false, features = ["rustls-tls", "json"] }
