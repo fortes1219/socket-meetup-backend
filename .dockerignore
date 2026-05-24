@@ -1,0 +1,24 @@
+# Build artifacts(本機 Windows MSVC build,Docker 內用不到)
+target/
+
+# Git / CI
+.git/
+.github/
+
+# Internal docs(已被 .gitignore 擋,double-check)
+.claude/
+CLAUDE.md
+ARCHITECTURE.md
+
+# Secrets(.env 永不進 image)
+.env
+.env.*
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
