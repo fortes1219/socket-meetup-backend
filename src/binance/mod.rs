@@ -9,10 +9,6 @@ pub mod ws;
 ///
 /// 金額欄位(open/high/low/close/volume/quote_volume)維持 `String`,
 /// 對齊「給前端的金額一律字串」+ sqlx `NUMERIC` 不丟精度。
-//
-// Phase A-1 階段只用 log 印部分欄位驗證 stream;其他欄位 Phase A-2 sqlx INSERT
-// 落庫時會全部讀到,屆時拿掉 allow(dead_code)。
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Kline {
   pub symbol: String,
@@ -24,6 +20,8 @@ pub struct Kline {
   pub low: String,
   pub close: String,
   pub volume: String,
+  /// Wire 有但 V002 schema 沒,保留 wire 完整性,落庫時 drop。
+  #[allow(dead_code)]
   pub quote_volume: String,
   pub trades_count: i64,
 }

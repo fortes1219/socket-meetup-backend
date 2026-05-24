@@ -1,10 +1,12 @@
 use anyhow::{Context, Result};
 use futures_util::StreamExt;
 use serde::Deserialize;
+use sqlx::PgPool;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, info, warn};
 
 use super::Kline;
+use crate::db;
 
 /// 外層 envelope(`e/E/s/k`),我們只關心 `k`。
 #[derive(Debug, Deserialize)]
@@ -60,13 +62,14 @@ impl From<KlineTick> for Kline {
   }
 }
 
-/// 連 `{base_ws}/ws/{symbol}@kline_{interval}`,持續 log 收到的 tick。
+/// 連 `{base_ws}/ws/{symbol}@kline_{interval}`,持續收 tick。
 ///
-/// - `is_closed=false` → DEBUG(避免每秒洗版)
-/// - `is_closed=true`  → INFO  CLOSED kline(每 `interval` 一次,真正落庫的對象)
+/// - `is_closed = false` → DEBUG(避免每秒洗版)
+/// - `is_closed = true`  → INFO  CLOSED kline + **upsert 落庫**(Phase A-2)
 ///
-/// Phase A-1 階段不 reconnect / 不落庫,純驗證 stream 通。
+/// Phase A-2 階段不 reconnect(A-3 之後)。
 pub async fn subscribe_kline_stream(
+  pool: PgPool,
   base_ws: &str,
   symbol: &str,
   interval: &str,
@@ -100,6 +103,9 @@ pub async fn subscribe_kline_stream(
               volume = %kline.volume,
               "CLOSED kline"
             );
+            if let Err(e) = db::klines::upsert(&pool, &kline).await {
+              tracing::error!(?e, symbol = %kline.symbol, "klines upsert failed");
+            }
           } else {
             debug!(close = %kline.close, "tick");
           }

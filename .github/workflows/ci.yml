@@ -14,6 +14,28 @@ jobs:
   rust:
     name: Rust fmt / check / clippy / test
     runs-on: ubuntu-latest
+
+    # Phase A-2 起:sqlx::query!() 需要 build time 連 DB 推斷 schema,
+    # 所以 CI 起 postgres service container 跟著 cargo build 一起跑。
+    # .sqlx/ 維持 ignore(CLAUDE.md L48 業務情報),不走 offline 模式。
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: demo
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d demo"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/demo
+
     steps:
       - uses: actions/checkout@v4
 
@@ -22,29 +44,29 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Cache cargo registry + target
+      - name: Cache cargo registry + target + installed binaries
         uses: Swatinem/rust-cache@v2
 
-      - name: cargo fetch (download deps once; subsequent steps run --offline)
+      - name: cargo fetch (download deps once)
         run: cargo fetch --locked
+
+      - name: Install sqlx-cli (rustls + postgres only)
+        run: cargo install sqlx-cli --no-default-features --features rustls,postgres --locked
+
+      - name: Run migrations against service postgres
+        run: sqlx migrate run
 
       - name: cargo fmt --check
         run: cargo fmt --check
 
       - name: cargo check
-        run: cargo check --locked --offline
-        env:
-          SQLX_OFFLINE: "true"
+        run: cargo check --locked
 
       - name: cargo clippy
-        run: cargo clippy --locked --offline --all-targets -- -D warnings
-        env:
-          SQLX_OFFLINE: "true"
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: cargo test
-        run: cargo test --locked --offline
-        env:
-          SQLX_OFFLINE: "true"
+        run: cargo test --locked
 
   # ─── Secret scan(每個 push / PR 都 gate)───
   gitleaks:
