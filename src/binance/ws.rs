@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use futures_util::StreamExt;
 use serde::Deserialize;
+use serde_json::json;
+use socketioxide::SocketIo;
 use sqlx::PgPool;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, info, warn};
@@ -64,12 +66,13 @@ impl From<KlineTick> for Kline {
 
 /// 連 `{base_ws}/ws/{symbol}@kline_{interval}`,持續收 tick。
 ///
-/// - `is_closed = false` → DEBUG(避免每秒洗版)
-/// - `is_closed = true`  → INFO  CLOSED kline + **upsert 落庫**(Phase A-2)
+/// - `is_closed = false` → DEBUG 印 close 價(避免每秒洗版)
+/// - `is_closed = true`  → INFO + **upsert 落庫** + **emit `kline:closed` 到 `/quote`**
 ///
-/// Phase A-2 階段不 reconnect(A-3 之後)。
+/// Phase A-3.1 階段不 reconnect / 不 throttle unclosed tick(後續 Phase 再加)。
 pub async fn subscribe_kline_stream(
   pool: PgPool,
+  io: SocketIo,
   base_ws: &str,
   symbol: &str,
   interval: &str,
@@ -103,8 +106,32 @@ pub async fn subscribe_kline_stream(
               volume = %kline.volume,
               "CLOSED kline"
             );
+            // 1. 落庫(Phase A-2)
             if let Err(e) = db::klines::upsert(&pool, &kline).await {
               tracing::error!(?e, symbol = %kline.symbol, "klines upsert failed");
+            }
+            // 2. 廣播到 /quote namespace(Phase A-3.1)
+            //    金額已經是 String(對齊 api-money-as-string memory rule)
+            if let Some(ns) = io.of("/quote") {
+              let res = ns
+                .emit(
+                  "kline:closed",
+                  &json!({
+                    "symbol": kline.symbol,
+                    "interval": kline.interval,
+                    "open_time": kline.open_time_ms,
+                    "close_time": kline.close_time_ms,
+                    "open": kline.open,
+                    "high": kline.high,
+                    "low": kline.low,
+                    "close": kline.close,
+                    "volume": kline.volume,
+                  }),
+                )
+                .await;
+              if let Err(e) = res {
+                warn!(?e, "emit kline:closed failed");
+              }
             }
           } else {
             debug!(close = %kline.close, "tick");
