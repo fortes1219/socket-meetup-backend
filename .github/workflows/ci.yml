@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ─── Rust gate(對齊 codex review 跑的 4 條)───
+  rust:
+    name: Rust fmt / check / clippy / test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo fetch (download deps once; subsequent steps run --offline)
+        run: cargo fetch --locked
+
+      - name: cargo fmt --check
+        run: cargo fmt --check
+
+      - name: cargo check
+        run: cargo check --locked --offline
+        env:
+          SQLX_OFFLINE: "true"
+
+      - name: cargo clippy
+        run: cargo clippy --locked --offline --all-targets -- -D warnings
+        env:
+          SQLX_OFFLINE: "true"
+
+      - name: cargo test
+        run: cargo test --locked --offline
+        env:
+          SQLX_OFFLINE: "true"
+
+  # ─── Secret scan(每個 push / PR 都 gate)───
+  gitleaks:
+    name: gitleaks secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0      # 抓全 history,讓 gitleaks 掃所有 commit
+
+      - name: gitleaks-action
+        uses: gitleaks/gitleaks-action@v2
