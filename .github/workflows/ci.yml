@@ -15,9 +15,9 @@ jobs:
     name: Rust fmt / check / clippy / test
     runs-on: ubuntu-latest
 
-    # Phase A-2 起:sqlx::query!() 需要 build time 連 DB 推斷 schema,
-    # 所以 CI 起 postgres service container 跟著 cargo build 一起跑。
-    # .sqlx/ 維持 ignore(CLAUDE.md L48 業務情報),不走 offline 模式。
+    # sqlx::query!() 需要 schema 來源:CI 起 postgres service container,
+    # migration 後跑 `cargo sqlx prepare --check` 驗 .sqlx/ offline cache 沒 drift,再 build。
+    # (.sqlx/ demo 已 commit,見 §0.5 / CLAUDE.md;Docker image build 也靠這份 cache)
     services:
       postgres:
         image: postgres:16-alpine
@@ -55,6 +55,9 @@ jobs:
 
       - name: Run migrations against service postgres
         run: sqlx migrate run
+
+      - name: Verify .sqlx offline cache not drifted
+        run: cargo sqlx prepare --check --workspace
 
       - name: cargo fmt --check
         run: cargo fmt --check

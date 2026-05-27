@@ -16,8 +16,8 @@ ARCHITECTURE.md
 # ─── Rust ─────────────────────────────────
 target/
 **/*.rs.bk
-# sqlx prepare 的 query cache,含 SQL 字串 = 業務情報
-.sqlx/
+# .sqlx/ 本 demo commit 進 repo(SQL 已隨 migrations/src 公開;Docker/CI offline build 需要)
+# production / 教室專案才 ignore — 見 CLAUDE.md、ARCHITECTURE.md §0.5
 *.db
 *.sqlite
 *.sqlite-journal

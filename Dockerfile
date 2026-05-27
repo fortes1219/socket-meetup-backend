@@ -1,6 +1,9 @@
 # ─── Stage 1: builder(編譯 release binary)───
 FROM rust:1.95-bookworm AS builder
 
+# sqlx::query! 編譯期走 offline cache(.sqlx/),不連 DB(Docker build 隔離無 postgres)
+ENV SQLX_OFFLINE=true
+
 WORKDIR /app
 
 # Layer cache trick:先 fetch deps,只有 Cargo.toml/Cargo.lock 變才重 fetch
@@ -10,8 +13,10 @@ RUN mkdir src && echo "fn main() {}" > src/main.rs && \
     rm -rf src target/release/socket-meetup-backend* \
            target/release/deps/socket_meetup_backend*
 
-# 真正的 source,只重編 our crate(deps 已被 cache 的 layer 編好)
+# 真正的 source + sqlx offline cache(.sqlx)+ test page(main.rs include_str!)
+COPY .sqlx ./.sqlx
 COPY src ./src
+COPY test ./test
 RUN cargo build --release --locked
 
 # ─── Stage 2: runtime(只放 binary + CA bundle)───

@@ -1,0 +1,79 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n    SELECT\n      symbol,\n      \"interval\",\n      open_time,\n      close_time,\n      open,\n      high,\n      low,\n      close,\n      volume,\n      trades_count\n    FROM klines\n    WHERE symbol = $1 AND \"interval\" = $2 AND open_time < $3\n    ORDER BY open_time DESC\n    LIMIT $4\n    ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "symbol",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "interval",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "open_time",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 3,
+        "name": "close_time",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 4,
+        "name": "open",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 5,
+        "name": "high",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 6,
+        "name": "low",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 7,
+        "name": "close",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 8,
+        "name": "volume",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 9,
+        "name": "trades_count",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Timestamptz",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "4f206aeda52409b42041db81633a26ca008a9fd7f651e4d5dacefdc8b104fdd7"
+}
