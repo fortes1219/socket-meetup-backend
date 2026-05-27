@@ -66,9 +66,7 @@ pub async fn get_klines(
 ) -> Result<Json<Vec<KlineDto>>, AppError> {
   let rows = match q.end_time {
     None => db::klines::fetch_init(&pool, &q.symbol, &q.interval, q.limit).await?,
-    Some(ts) => {
-      db::klines::fetch_forward(&pool, &q.symbol, &q.interval, ts, q.limit).await?
-    }
+    Some(ts) => db::klines::fetch_forward(&pool, &q.symbol, &q.interval, ts, q.limit).await?,
   };
   Ok(Json(rows.into_iter().map(KlineDto::from).collect()))
 }

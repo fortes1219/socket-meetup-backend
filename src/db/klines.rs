@@ -47,8 +47,7 @@ pub async fn upsert(pool: &PgPool, k: &Kline) -> Result<()> {
     .timestamp_millis_opt(k.close_time_ms)
     .single()
     .context("invalid close_time_ms")?;
-  let trades_count =
-    i32::try_from(k.trades_count).context("trades_count overflow i32")?;
+  let trades_count = i32::try_from(k.trades_count).context("trades_count overflow i32")?;
 
   sqlx::query!(
     r#"
