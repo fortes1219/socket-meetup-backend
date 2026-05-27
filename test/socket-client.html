@@ -11,28 +11,43 @@
   </style>
 </head>
 <body>
-  <h1>Socket.IO test — <code>/quote</code></h1>
-  <p>F12 開 console,預期依序看到:</p>
-  <ol>
-    <li>立刻:<code>[/quote] connected: &lt;socket-id&gt;</code></li>
-    <li>等 ≤ 60 秒:<code>[/quote] kline:closed { symbol, interval, open, high, low, close, volume, open_time, close_time }</code>(BTCUSDT 1m,每分鐘一次)</li>
-  </ol>
-  <p id="status">Status: <span id="state">connecting...</span></p>
+  <h1>Socket.IO test — <code>/quote</code> + <code>/</code></h1>
+  <p>F12 開 console,預期看到:</p>
+  <ul>
+    <li><code>[/quote] connected</code> + 等 ≤ 60 秒 <code>[/quote] kline:closed { ... }</code>(BTCUSDT 1m)</li>
+    <li><code>[/] connected</code>;在 terminal <code>curl -X POST localhost:3000/admin/broadcast -H "X-Admin-Token: &lt;token&gt;"</code> 後看 <code>[/] callUpdate { resource: "trading-pairs", timestamp }</code></li>
+  </ul>
+  <p id="status">/quote: <span id="quote-state">connecting...</span> | /: <span id="root-state">connecting...</span></p>
 
   <script>
     const $ = (id) => document.getElementById(id);
-    const quote = io("/quote");
 
+    // /quote namespace:高頻行情
+    const quote = io("/quote");
     quote.on("connect", () => {
       console.log("[/quote] connected:", quote.id);
-      $("state").innerHTML = '<span class="ok">connected ' + quote.id + '</span>';
+      $("quote-state").innerHTML = '<span class="ok">connected ' + quote.id + '</span>';
     });
     quote.on("disconnect", (reason) => {
       console.log("[/quote] disconnected:", reason);
-      $("state").textContent = "disconnected: " + reason;
+      $("quote-state").textContent = "disconnected: " + reason;
     });
     quote.on("kline:closed", (k) => {
       console.log("[/quote] kline:closed", k);
+    });
+
+    // / namespace:低頻全站訊號(callUpdate)
+    const root = io("/");
+    root.on("connect", () => {
+      console.log("[/] connected:", root.id);
+      $("root-state").innerHTML = '<span class="ok">connected ' + root.id + '</span>';
+    });
+    root.on("disconnect", (reason) => {
+      console.log("[/] disconnected:", reason);
+      $("root-state").textContent = "disconnected: " + reason;
+    });
+    root.on("callUpdate", (e) => {
+      console.log("[/] callUpdate", e);
     });
   </script>
 </body>
