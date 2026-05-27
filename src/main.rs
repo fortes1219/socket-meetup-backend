@@ -4,8 +4,9 @@ use anyhow::Result;
 use axum::{
   Json, Router,
   extract::FromRef,
+  middleware,
   response::Html,
-  routing::get,
+  routing::{get, post},
 };
 use serde_json::json;
 use socketioxide::SocketIo;
@@ -22,11 +23,15 @@ mod db;
 mod error;
 mod socket;
 
-/// Composite state(handler 透過 FromRef 分別 extract `State<PgPool>` 或 `State<SocketIo>`)。
+/// Composite state。
+///
+/// - 既有 handler 透過 `FromRef` 取 `State<PgPool>` / `State<SocketIo>`
+/// - `/admin` middleware 與 handler 用 `State<AppState>` 取 `io` + `admin_token`
 #[derive(Clone)]
-struct AppState {
-  pool: PgPool,
-  io: SocketIo,
+pub struct AppState {
+  pub pool: PgPool,
+  pub io: SocketIo,
+  pub admin_token: String,
 }
 
 impl FromRef<AppState> for PgPool {
@@ -48,9 +53,10 @@ async fn main() -> Result<()> {
 
   // Tracing(讀 RUST_LOG,fallback info + sqlx warn + socketio/engineio warn 抑制 noise)
   tracing_subscriber::fmt()
-    .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-      EnvFilter::new("info,sqlx=warn,socketioxide=warn,engineioxide=warn")
-    }))
+    .with_env_filter(
+      EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info,sqlx=warn,socketioxide=warn,engineioxide=warn")),
+    )
     .init();
 
   // Postgres pool
@@ -62,11 +68,13 @@ async fn main() -> Result<()> {
     .await?;
   tracing::info!("connected to postgres");
 
-  // Binance bases
+  // Binance bases + admin token
   let rest_base = std::env::var("BINANCE_REST_BASE")
     .map_err(|_| anyhow::anyhow!("BINANCE_REST_BASE not set; check .env"))?;
   let ws_base = std::env::var("BINANCE_WS_BASE")
     .map_err(|_| anyhow::anyhow!("BINANCE_WS_BASE not set; check .env"))?;
+  let admin_token =
+    std::env::var("ADMIN_TOKEN").map_err(|_| anyhow::anyhow!("ADMIN_TOKEN not set; check .env"))?;
 
   // ─── Socket.IO layer ───
   let (socketio_layer, io) = SocketIo::new_layer();
@@ -113,12 +121,25 @@ async fn main() -> Result<()> {
   });
 
   // ─── HTTP server ───
-  let app_state = AppState { pool, io };
+  let app_state = AppState {
+    pool,
+    io,
+    admin_token,
+  };
+
+  // /admin/* 共用 token middleware(§8 C);A-3.3 CRUD route 加進這個 sub-router 自動沿用
+  let admin_routes = Router::new()
+    .route("/broadcast", post(api::admin::broadcast))
+    .route_layer(middleware::from_fn_with_state(
+      app_state.clone(),
+      api::admin::require_admin_token,
+    ));
 
   let app = Router::new()
     .route("/healthz", get(healthz))
     .route("/api/v1/klines", get(api::klines::get_klines))
     .route("/socket-test", get(socket_test_page))
+    .nest("/admin", admin_routes)
     .layer(socketio_layer)
     .layer(TraceLayer::new_for_http())
     .with_state(app_state);
@@ -138,7 +159,7 @@ async fn healthz() -> Json<serde_json::Value> {
   Json(json!({ "status": "ok" }))
 }
 
-/// Browser test page,demo 用,let me open http://localhost:3000/socket-test。
+/// Browser test page,demo 用:http://localhost:3000/socket-test
 async fn socket_test_page() -> Html<&'static str> {
   Html(include_str!("../test/socket-client.html"))
 }
