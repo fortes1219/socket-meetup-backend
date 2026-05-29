@@ -1,0 +1,38 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n    SELECT symbol, base_asset, quote_asset, display_order\n    FROM trading_pairs\n    WHERE deleted_at IS NULL AND enabled = true\n    ORDER BY display_order ASC, symbol ASC\n    ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "symbol",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "base_asset",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "quote_asset",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "display_order",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "978e252a75920f0e52366648f3086f4c823fc063d0f14b76b51d36efb10585e3"
+}

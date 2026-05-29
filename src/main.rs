@@ -130,6 +130,7 @@ async fn main() -> Result<()> {
   // /admin/* 共用 token middleware(§8 C);A-3.3 CRUD route 加進這個 sub-router 自動沿用
   let admin_routes = Router::new()
     .route("/broadcast", post(api::admin::broadcast))
+    .route("/trading-pairs", get(api::trading_pairs::list_admin))
     .route_layer(middleware::from_fn_with_state(
       app_state.clone(),
       api::admin::require_admin_token,
@@ -138,6 +139,10 @@ async fn main() -> Result<()> {
   let app = Router::new()
     .route("/healthz", get(healthz))
     .route("/api/v1/klines", get(api::klines::get_klines))
+    .route(
+      "/api/v1/trading-pairs",
+      get(api::trading_pairs::list_public),
+    )
     .route("/socket-test", get(socket_test_page))
     .nest("/admin", admin_routes)
     .layer(socketio_layer)
