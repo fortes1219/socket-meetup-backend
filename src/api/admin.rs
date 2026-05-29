@@ -4,9 +4,8 @@ use axum::{
   middleware::Next,
   response::Response,
 };
-use serde_json::json;
 
-use crate::{AppState, error::AppError};
+use crate::{AppState, error::AppError, socket};
 
 /// `/admin/*` 共用 middleware:檢查 `X-Admin-Token` header 對齊 env `ADMIN_TOKEN`(§8 C)。
 ///
@@ -33,25 +32,13 @@ pub async fn require_admin_token(
 ///
 /// §6.6 error 語意:無 DB mutation,emit 失敗 **或** `/` namespace 不存在 → 500
 /// `broadcast_failed`(不得回 204);成功 → 204。
+///
+/// emit 共用 [`socket::emit_call_update`];此處 map 成 `broadcast_failed`,CRUD mutation
+/// 則 map 成 `committed_broadcast_failed`,兩種語意不混(guardrail #2)。
 pub async fn broadcast(State(state): State<AppState>) -> Result<StatusCode, AppError> {
-  // `/` namespace 不存在也算 broadcast failure(§6.6:不得 silently 回 204)。
-  let ns = state.io.of("/").ok_or_else(|| {
-    tracing::warn!("broadcast: / namespace not registered");
-    AppError::BroadcastFailed
-  })?;
-
-  ns.emit(
-    "callUpdate",
-    &json!({
-      "resource": "trading-pairs",
-      "timestamp": chrono::Utc::now().timestamp_millis(),
-    }),
-  )
-  .await
-  .map_err(|e| {
-    tracing::warn!(?e, "emit callUpdate failed");
-    AppError::BroadcastFailed
-  })?;
+  socket::emit_call_update(&state.io)
+    .await
+    .map_err(|_| AppError::BroadcastFailed)?;
 
   tracing::info!("admin broadcast callUpdate(resource=trading-pairs)");
   Ok(StatusCode::NO_CONTENT)

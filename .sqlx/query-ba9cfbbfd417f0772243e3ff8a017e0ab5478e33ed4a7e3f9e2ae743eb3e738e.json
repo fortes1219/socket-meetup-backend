@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n    INSERT INTO trading_pair_audit (audit_id, trading_pair_id, action, changed_by)\n    VALUES ($1, $2, 'added', 'admin:demo')\n    ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ba9cfbbfd417f0772243e3ff8a017e0ab5478e33ed4a7e3f9e2ae743eb3e738e"
+}

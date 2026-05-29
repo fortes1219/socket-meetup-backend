@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use reqwest::Client;
+use serde::Deserialize;
 
 use super::Kline;
 
@@ -70,4 +71,89 @@ pub async fn fetch_klines(
       })
       .collect(),
   )
+}
+
+/// binance `exchangeInfo` 取回的 symbol metadata(camelCase wire)。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawExchangeInfo {
+  symbols: Vec<RawSymbol>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawSymbol {
+  symbol: String,
+  base_asset: String,
+  quote_asset: String,
+}
+
+/// 幣安錯誤 envelope(invalid-symbol = HTTP 400 + `{ "code": -1121 }`)。
+#[derive(Debug, Deserialize)]
+struct BinanceErrorBody {
+  code: i64,
+}
+
+/// binance 認可的 symbol metadata(POST 用,base/quote 由幣安給,不信 client)。
+pub struct SymbolMeta {
+  pub symbol: String,
+  pub base_asset: String,
+  pub quote_asset: String,
+}
+
+/// `fetch_exchange_info` 的兩種失敗(§6.6 POST 流程):
+/// - `SymbolNotFound` → 422(空 symbols 或 code -1121)
+/// - `Upstream` → 502(network / timeout / non-2xx / 解析失敗);原始錯誤只進 log
+pub enum ExchangeInfoError {
+  SymbolNotFound,
+  Upstream(anyhow::Error),
+}
+
+/// 問幣安 `GET {base}/api/v3/exchangeInfo?symbol=`,取 base/quote asset。
+///
+/// timeout 由傳入的 `Client`(main.rs 建構時設定)保證 —— 否則「timeout → 502」
+/// 只是紙上規格。symbol-not-found 與其他 upstream 失敗嚴格分流(§6.6)。
+pub async fn fetch_exchange_info(
+  client: &Client,
+  base: &str,
+  symbol: &str,
+) -> std::result::Result<SymbolMeta, ExchangeInfoError> {
+  let url = format!("{}/api/v3/exchangeInfo?symbol={}", base, symbol);
+
+  let resp = client.get(&url).send().await.map_err(|e| {
+    ExchangeInfoError::Upstream(
+      anyhow::Error::new(e).context("binance exchangeInfo request failed"),
+    )
+  })?;
+
+  let status = resp.status();
+  let body = resp.text().await.map_err(|e| {
+    ExchangeInfoError::Upstream(
+      anyhow::Error::new(e).context("binance exchangeInfo body read failed"),
+    )
+  })?;
+
+  if status.is_success() {
+    let info: RawExchangeInfo = serde_json::from_str(&body).map_err(|e| {
+      ExchangeInfoError::Upstream(
+        anyhow::Error::new(e).context("binance exchangeInfo not valid JSON"),
+      )
+    })?;
+    match info.symbols.into_iter().next() {
+      Some(s) => Ok(SymbolMeta {
+        symbol: s.symbol,
+        base_asset: s.base_asset,
+        quote_asset: s.quote_asset,
+      }),
+      None => Err(ExchangeInfoError::SymbolNotFound),
+    }
+  } else if status == reqwest::StatusCode::BAD_REQUEST
+    && matches!(serde_json::from_str::<BinanceErrorBody>(&body), Ok(e) if e.code == -1121)
+  {
+    Err(ExchangeInfoError::SymbolNotFound)
+  } else {
+    Err(ExchangeInfoError::Upstream(anyhow::anyhow!(
+      "binance exchangeInfo unexpected status: {status}"
+    )))
+  }
 }

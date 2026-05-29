@@ -1,14 +1,18 @@
-use axum::{Json, extract::State};
+use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
+use uuid::Uuid;
 
 use crate::{
-  api::extractors::StrictQuery,
+  AppState,
+  api::extractors::{StrictJson, StrictPath, StrictQuery},
+  binance::rest::{self, ExchangeInfoError},
   db::{
     self,
-    trading_pairs::{AdminPairRow, PublicPairRow},
+    trading_pairs::{AdminPairRow, PairPatch, PatchOutcome, PublicPairRow, TradingPairError},
   },
   error::AppError,
+  socket,
 };
 
 /// `GET /api/v1/trading-pairs` response item(§6.6 `PublicTradingPair`)。
@@ -97,4 +101,125 @@ pub async fn list_admin(
 ) -> Result<Json<Vec<AdminTradingPair>>, AppError> {
   let rows = db::trading_pairs::list_admin(&pool, q.include_disabled).await?;
   Ok(Json(rows.into_iter().map(AdminTradingPair::from).collect()))
+}
+
+// ─── 寫路徑(A-3.3b)───
+
+/// `POST /admin/trading-pairs` body。client 只給 symbol,base/quote 由幣安給。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreatePairBody {
+  pub symbol: String,
+}
+
+/// `PATCH /admin/trading-pairs/{id}` body。兩欄皆 optional;全 None → empty_patch。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PatchPairBody {
+  pub enabled: Option<bool>,
+  pub display_order: Option<i32>,
+}
+
+/// service 層 typed error → HTTP error 的明確映射(不走 blanket From,見 [`TradingPairError`])。
+fn map_pair_err(e: TradingPairError) -> AppError {
+  match e {
+    TradingPairError::NotFound => AppError::NotFound,
+    TradingPairError::Conflict => AppError::Conflict,
+    TradingPairError::Db(err) => AppError::Internal(err.into()),
+  }
+}
+
+/// `POST /admin/trading-pairs` — 201 AdminTradingPair。
+///
+/// 流程(§6.6):symbol trim+upper(空→400)→ **tx 外** 問幣安(422/502)→ tx INSERT+audit
+/// (UNIQUE→409)→ commit → emit(失敗→committed_broadcast_failed)。
+pub async fn create(
+  State(state): State<AppState>,
+  StrictJson(body): StrictJson<CreatePairBody>,
+) -> Result<(StatusCode, Json<AdminTradingPair>), AppError> {
+  let symbol = body.symbol.trim().to_uppercase();
+  if symbol.is_empty() {
+    return Err(AppError::InvalidParam);
+  }
+
+  // tx 外:問幣安取 authoritative base/quote(不信 client 亂塞)
+  let meta = rest::fetch_exchange_info(&state.http, &state.binance_rest_base, &symbol)
+    .await
+    .map_err(|e| match e {
+      ExchangeInfoError::SymbolNotFound => AppError::SymbolNotFound,
+      ExchangeInfoError::Upstream(err) => {
+        tracing::warn!(error = ?err, "binance exchangeInfo upstream error");
+        AppError::UpstreamError
+      }
+    })?;
+
+  let id = Uuid::now_v7();
+  let row = db::trading_pairs::insert_with_audit(
+    &state.pool,
+    id,
+    &meta.symbol,
+    &meta.base_asset,
+    &meta.quote_asset,
+  )
+  .await
+  .map_err(map_pair_err)?;
+
+  socket::emit_call_update(&state.io)
+    .await
+    .map_err(|_| AppError::CommittedBroadcastFailed)?;
+
+  Ok((StatusCode::CREATED, Json(AdminTradingPair::from(row))))
+}
+
+/// `PATCH /admin/trading-pairs/{id}` — 200 AdminTradingPair。
+///
+/// 空 body→400 empty_patch;display_order<0→400 invalid_param;`:id` 不存在→404。
+/// 實際變更才 emit;no-op→200 不 emit、不改 updated_at(§6.6 PATCH 語意)。
+pub async fn update(
+  State(state): State<AppState>,
+  StrictPath(id): StrictPath<Uuid>,
+  StrictJson(body): StrictJson<PatchPairBody>,
+) -> Result<Json<AdminTradingPair>, AppError> {
+  if body.enabled.is_none() && body.display_order.is_none() {
+    return Err(AppError::EmptyPatch);
+  }
+  if matches!(body.display_order, Some(v) if v < 0) {
+    return Err(AppError::InvalidParam);
+  }
+
+  let patch = PairPatch {
+    enabled: body.enabled,
+    display_order: body.display_order,
+  };
+  let outcome = db::trading_pairs::update_with_audit(&state.pool, id, patch)
+    .await
+    .map_err(map_pair_err)?;
+
+  let row = match outcome {
+    PatchOutcome::Changed(row) => {
+      socket::emit_call_update(&state.io)
+        .await
+        .map_err(|_| AppError::CommittedBroadcastFailed)?;
+      row
+    }
+    PatchOutcome::NoOp(row) => row,
+  };
+
+  Ok(Json(AdminTradingPair::from(row)))
+}
+
+/// `DELETE /admin/trading-pairs/{id}` — 204。soft delete + audit `removed`,commit 後 emit。
+pub async fn delete(
+  State(state): State<AppState>,
+  StrictPath(id): StrictPath<Uuid>,
+) -> Result<StatusCode, AppError> {
+  db::trading_pairs::soft_delete_with_audit(&state.pool, id)
+    .await
+    .map_err(map_pair_err)?;
+
+  socket::emit_call_update(&state.io)
+    .await
+    .map_err(|_| AppError::CommittedBroadcastFailed)?;
+
+  Ok(StatusCode::NO_CONTENT)
 }

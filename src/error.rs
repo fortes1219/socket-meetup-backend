@@ -19,21 +19,33 @@ pub struct ErrorBody {
 
 /// Handler / middleware / extractor 共用 error type。
 ///
-/// 透過 `IntoResponse` map 成 §6.6 的 `(status, ErrorBody)`。多數 `?` 來源
+/// 透過 `IntoResponse` map 成 §6.6 的 `(status, ErrorBody)`。非預期的 `?` 來源
 /// (sqlx / reqwest / anyhow …)經 blanket `From` 收斂成 `Internal`,完整 chain
 /// 進 log,對外只回固定 `internal_error`。
 ///
-/// Mutation domain error(`not_found` / `conflict` / `symbol_not_found` /
-/// `upstream_error` / `empty_patch` / `committed_broadcast_failed`)在 A-3.3b
-/// 寫路徑再擴充,本 enum 目前只含 read path + admin 共用所需的 variant。
+/// Domain error(conflict / not_found / symbol_not_found …)**不走** blanket `From`,
+/// 由 service 層的 typed error 在 handler 明確 map 成對應 variant —— 否則
+/// 例如 UNIQUE violation 會被 blanket `From` 誤收斂成 500 internal_error。
 pub enum AppError {
   /// 401:`X-Admin-Token` 缺漏或不符(§6.6 Auth / §8 C)
   Unauthorized,
   /// 400:strict input rejection(query / path / json parse 失敗)
   InvalidParam,
+  /// 400:PATCH body 全為 None(§6.6 PATCH 語意)
+  EmptyPatch,
+  /// 404:`:id` 不存在或已 soft-deleted(§6.6)
+  NotFound,
+  /// 409:symbol UNIQUE 違反(含 soft-deleted 佔用,§6.6 POST)
+  Conflict,
+  /// 422:binance exchangeInfo 查無此 symbol(空 symbols / code -1121)
+  SymbolNotFound,
+  /// 502:binance upstream 失敗(network / timeout / non-2xx / 解析失敗)
+  UpstreamError,
   /// 500:manual `/admin/broadcast` emit 失敗,或 `/` namespace 不存在(§6.6)
   BroadcastFailed,
-  /// 500:未預期內部錯誤(DB failure 等);原始錯誤只進 log,不外洩
+  /// 500:mutation **已 commit**,只 callUpdate emit 失敗 → 前端 refetch、不得 retry(§6.6 三態)
+  CommittedBroadcastFailed,
+  /// 500:未預期內部錯誤(commit 前的 DB failure 等);原始錯誤只進 log,不外洩
   Internal(anyhow::Error),
 }
 
@@ -54,11 +66,53 @@ impl IntoResponse for AppError {
           message: "invalid request parameter",
         },
       ),
+      AppError::EmptyPatch => (
+        StatusCode::BAD_REQUEST,
+        ErrorBody {
+          error: "empty_patch",
+          message: "patch body must contain at least one field",
+        },
+      ),
+      AppError::NotFound => (
+        StatusCode::NOT_FOUND,
+        ErrorBody {
+          error: "not_found",
+          message: "trading pair not found",
+        },
+      ),
+      AppError::Conflict => (
+        StatusCode::CONFLICT,
+        ErrorBody {
+          error: "conflict",
+          message: "symbol already exists",
+        },
+      ),
+      AppError::SymbolNotFound => (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        ErrorBody {
+          error: "symbol_not_found",
+          message: "symbol not found on binance",
+        },
+      ),
+      AppError::UpstreamError => (
+        StatusCode::BAD_GATEWAY,
+        ErrorBody {
+          error: "upstream_error",
+          message: "binance upstream request failed",
+        },
+      ),
       AppError::BroadcastFailed => (
         StatusCode::INTERNAL_SERVER_ERROR,
         ErrorBody {
           error: "broadcast_failed",
           message: "failed to broadcast callUpdate",
+        },
+      ),
+      AppError::CommittedBroadcastFailed => (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        ErrorBody {
+          error: "committed_broadcast_failed",
+          message: "change committed but broadcast failed; refetch instead of retrying",
         },
       ),
       AppError::Internal(e) => {

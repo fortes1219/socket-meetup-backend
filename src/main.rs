@@ -6,7 +6,7 @@ use axum::{
   extract::FromRef,
   middleware,
   response::Html,
-  routing::{get, post},
+  routing::{get, patch, post},
 };
 use serde_json::json;
 use socketioxide::SocketIo;
@@ -26,12 +26,15 @@ mod socket;
 /// Composite state。
 ///
 /// - 既有 handler 透過 `FromRef` 取 `State<PgPool>` / `State<SocketIo>`
-/// - `/admin` middleware 與 handler 用 `State<AppState>` 取 `io` + `admin_token`
+/// - `/admin` middleware 與 mutation handler 用 `State<AppState>` 取 `io` + `admin_token`
+///   + `http`(共用 reqwest client,帶 timeout)+ `binance_rest_base`(POST 問幣安)
 #[derive(Clone)]
 pub struct AppState {
   pub pool: PgPool,
   pub io: SocketIo,
   pub admin_token: String,
+  pub http: reqwest::Client,
+  pub binance_rest_base: String,
 }
 
 impl FromRef<AppState> for PgPool {
@@ -76,6 +79,11 @@ async fn main() -> Result<()> {
   let admin_token =
     std::env::var("ADMIN_TOKEN").map_err(|_| anyhow::anyhow!("ADMIN_TOKEN not set; check .env"))?;
 
+  // 共用 HTTP client:設 timeout,否則「upstream timeout → 502」只是紙上規格(guardrail #1)
+  let http = reqwest::Client::builder()
+    .timeout(std::time::Duration::from_secs(10))
+    .build()?;
+
   // ─── Socket.IO layer ───
   let (socketio_layer, io) = SocketIo::new_layer();
   socket::register_namespaces(&io);
@@ -83,9 +91,10 @@ async fn main() -> Result<()> {
   // ─── Binance ingestion tasks ───
   // Task A: REST 撈 500 筆 backfill(一次性)
   let rest_pool = pool.clone();
+  let rest_http = http.clone();
+  let task_rest_base = rest_base.clone();
   tokio::spawn(async move {
-    let client = reqwest::Client::new();
-    match binance::rest::fetch_klines(&client, &rest_base, "BTCUSDT", "1m", 500).await {
+    match binance::rest::fetch_klines(&rest_http, &task_rest_base, "BTCUSDT", "1m", 500).await {
       Ok(klines) => {
         tracing::info!(
           count = klines.len(),
@@ -125,12 +134,21 @@ async fn main() -> Result<()> {
     pool,
     io,
     admin_token,
+    http,
+    binance_rest_base: rest_base,
   };
 
-  // /admin/* 共用 token middleware(§8 C);A-3.3 CRUD route 加進這個 sub-router 自動沿用
+  // /admin/* 共用 token middleware(§8 C);trading-pairs CRUD route 加進這個 sub-router 自動沿用
   let admin_routes = Router::new()
     .route("/broadcast", post(api::admin::broadcast))
-    .route("/trading-pairs", get(api::trading_pairs::list_admin))
+    .route(
+      "/trading-pairs",
+      get(api::trading_pairs::list_admin).post(api::trading_pairs::create),
+    )
+    .route(
+      "/trading-pairs/{id}",
+      patch(api::trading_pairs::update).delete(api::trading_pairs::delete),
+    )
     .route_layer(middleware::from_fn_with_state(
       app_state.clone(),
       api::admin::require_admin_token,
