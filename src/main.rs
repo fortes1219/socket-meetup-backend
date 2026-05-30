@@ -118,7 +118,7 @@ async fn main() -> Result<()> {
     }
   });
 
-  // Task B: WS subscribe btcusdt@kline_1m,closed kline upsert + emit `kline:closed`
+  // Task B: WS subscribe btcusdt@kline_1m,closed ticks persist, all ticks emit `kline`
   let ws_pool = pool.clone();
   let ws_io = io.clone();
   tokio::spawn(async move {
