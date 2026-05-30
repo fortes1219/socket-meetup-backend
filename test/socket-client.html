@@ -5,25 +5,67 @@
   <title>Socket.IO test — socket-meetup-backend</title>
   <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
   <style>
-    body { font-family: -apple-system, sans-serif; max-width: 720px; margin: 2em auto; padding: 0 1em; line-height: 1.6; }
-    code { background: #f4f4f4; padding: 2px 6px; border-radius: 3px; }
+    body { font-family: -apple-system, sans-serif; max-width: 780px; margin: 2em auto; padding: 0 1em; line-height: 1.55; }
+    code, kbd { background: #f4f4f4; padding: 2px 6px; border-radius: 3px; }
     .ok { color: #2a7; font-weight: bold; }
+    .panel { border: 1px solid #ddd; border-radius: 6px; padding: 1em 1.2em; margin: 1em 0; }
+    .panel h2 { margin-top: 0; font-size: 1.05em; }
+    button { padding: 6px 12px; margin-right: 8px; cursor: pointer; }
+    .counter { display: inline-block; min-width: 3em; font-weight: bold; }
+    pre { background: #f7f7f7; padding: 8px; border-radius: 4px; overflow-x: auto; max-height: 240px; font-size: 0.85em; }
+    .rooms { color: #06c; }
+    .muted { color: #888; }
   </style>
 </head>
 <body>
   <h1>Socket.IO test — <code>/quote</code> + <code>/</code></h1>
-  <p>F12 開 console,預期看到:</p>
-  <ul>
-    <li><code>[/quote] connected</code> + 等 ≤ 60 秒 <code>[/quote] kline:closed { ... }</code>(BTCUSDT 1m)</li>
-    <li><code>[/] connected</code>;在 terminal <code>curl -X POST localhost:3000/admin/broadcast -H "X-Admin-Token: &lt;token&gt;"</code> 後看 <code>[/] callUpdate { resource: "trading-pairs", timestamp }</code></li>
-  </ul>
-  <p id="status">/quote: <span id="quote-state">connecting...</span> | /: <span id="root-state">connecting...</span></p>
+  <p class="muted">F12 開 console;按 Subscribe 後預期看到 <code>kline</code> event 流入,每秒級 unclosed + 每分鐘 closed。Unsubscribe 後 counter 不再增加。</p>
+
+  <div class="panel">
+    <h2><code>/quote</code> — Kline realtime (§6.5)</h2>
+    <p>連線:<span id="quote-state">connecting...</span></p>
+    <p>
+      <button id="sub-btc-1m">Subscribe BTCUSDT 1m</button>
+      <button id="unsub-btc-1m">Unsubscribe BTCUSDT 1m</button>
+      <button id="sub-eth-1m">Subscribe ETHUSDT 1m</button>
+      <button id="unsub-eth-1m">Unsubscribe ETHUSDT 1m</button>
+    </p>
+    <p>Client subscribed rooms(本頁追蹤,server 端權威 log 看 backend): <span id="rooms" class="rooms">(none)</span></p>
+    <p>
+      Closed ticks(<code>closed:true</code>): <span class="counter" id="closed-count">0</span> &nbsp;
+      Unclosed ticks(<code>closed:false</code>): <span class="counter" id="unclosed-count">0</span>
+    </p>
+    <p>Last <code>kline</code> payload:</p>
+    <pre id="last-kline" class="muted">(none yet)</pre>
+  </div>
+
+  <div class="panel">
+    <h2><code>/</code> — Admin callUpdate</h2>
+    <p>連線:<span id="root-state">connecting...</span></p>
+    <p>
+      Terminal:
+      <code>curl -X POST localhost:3000/admin/broadcast -H "X-Admin-Token: &lt;token&gt;"</code>
+    </p>
+    <p>callUpdate received: <span class="counter" id="callupdate-count">0</span></p>
+    <p>Last <code>callUpdate</code> payload:</p>
+    <pre id="last-callupdate" class="muted">(none yet)</pre>
+  </div>
 
   <script>
     const $ = (id) => document.getElementById(id);
 
-    // /quote namespace:高頻行情
+    // ─── /quote namespace ─────────────────────────────────────────────
     const quote = io("/quote");
+
+    // 本頁追蹤的已訂閱 room(無 ack,server 才是權威)
+    const subRooms = new Set();
+    let closedCount = 0;
+    let unclosedCount = 0;
+
+    const renderRooms = () => {
+      $("rooms").textContent = subRooms.size === 0 ? "(none)" : Array.from(subRooms).join(", ");
+    };
+
     quote.on("connect", () => {
       console.log("[/quote] connected:", quote.id);
       $("quote-state").innerHTML = '<span class="ok">connected ' + quote.id + '</span>';
@@ -31,13 +73,43 @@
     quote.on("disconnect", (reason) => {
       console.log("[/quote] disconnected:", reason);
       $("quote-state").textContent = "disconnected: " + reason;
-    });
-    quote.on("kline:closed", (k) => {
-      console.log("[/quote] kline:closed", k);
+      // server 端 room 已隨 disconnect 自動清掉;本頁追蹤一併清,避免誤導
+      subRooms.clear();
+      renderRooms();
     });
 
-    // / namespace:低頻全站訊號(callUpdate)
+    quote.on("kline", (p) => {
+      const closed = p && p.kline && p.kline.closed;
+      if (closed) closedCount++; else unclosedCount++;
+      $("closed-count").textContent = closedCount;
+      $("unclosed-count").textContent = unclosedCount;
+      $("last-kline").textContent = JSON.stringify(p, null, 2);
+      $("last-kline").classList.remove("muted");
+      console.log("[/quote] kline", p);
+    });
+
+    const subscribe = (symbol, interval) => {
+      quote.emit("subscribe", { symbol, interval });
+      subRooms.add(symbol.toUpperCase() + ":" + interval);
+      renderRooms();
+      console.log("[/quote] emit subscribe", symbol, interval);
+    };
+    const unsubscribe = (symbol, interval) => {
+      quote.emit("unsubscribe", { symbol, interval });
+      subRooms.delete(symbol.toUpperCase() + ":" + interval);
+      renderRooms();
+      console.log("[/quote] emit unsubscribe", symbol, interval);
+    };
+
+    $("sub-btc-1m").addEventListener("click", () => subscribe("BTCUSDT", "1m"));
+    $("unsub-btc-1m").addEventListener("click", () => unsubscribe("BTCUSDT", "1m"));
+    $("sub-eth-1m").addEventListener("click", () => subscribe("ETHUSDT", "1m"));
+    $("unsub-eth-1m").addEventListener("click", () => unsubscribe("ETHUSDT", "1m"));
+
+    // ─── / namespace (callUpdate) ─────────────────────────────────────
     const root = io("/");
+    let callupdateCount = 0;
+
     root.on("connect", () => {
       console.log("[/] connected:", root.id);
       $("root-state").innerHTML = '<span class="ok">connected ' + root.id + '</span>';
@@ -47,6 +119,10 @@
       $("root-state").textContent = "disconnected: " + reason;
     });
     root.on("callUpdate", (e) => {
+      callupdateCount++;
+      $("callupdate-count").textContent = callupdateCount;
+      $("last-callupdate").textContent = JSON.stringify(e, null, 2);
+      $("last-callupdate").classList.remove("muted");
       console.log("[/] callUpdate", e);
     });
   </script>

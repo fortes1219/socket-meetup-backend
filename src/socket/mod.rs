@@ -1,14 +1,48 @@
+use serde::Deserialize;
 use serde_json::json;
-use socketioxide::{SocketIo, extract::SocketRef};
+use socketioxide::{
+  SocketIo,
+  extract::{Data, SocketRef},
+};
 use tracing::info;
+
+/// `subscribe` / `unsubscribe` payload(§6.5)。fire-and-forget(無 ack)。
+#[derive(Debug, Deserialize)]
+struct SubscriptionPayload {
+  symbol: String,
+  interval: String,
+}
 
 /// 註冊所有 socket.io namespace(§6.5:一條 TCP,兩個 namespace)。
 ///
-/// - `/quote` — 高頻行情(closed kline),client subscribe 後接 `kline:closed`
+/// - `/quote` — 高頻行情。client emit `subscribe { symbol, interval }` 加入 room
+///   `${SYMBOL_UPPER}:${interval}`;`unsubscribe` 同 shape 離開;server 推
+///   `kline` event 到對應 room(`binance::ws::subscribe_kline_stream` 來源)
 /// - `/`      — 低頻全站訊號,client 接 `callUpdate`(事件風暴源頭,fan-out 推所有 client)
 pub fn register_namespaces(io: &SocketIo) {
   io.ns("/quote", |s: SocketRef| async move {
     info!(id = %s.id, "client connected to /quote");
+
+    // subscribe → join room `${SYMBOL_UPPER}:${interval}`(§6.5,無 ack;join 為 infallible)
+    s.on(
+      "subscribe",
+      |s: SocketRef, Data::<SubscriptionPayload>(p)| async move {
+        let room = format!("{}:{}", p.symbol.to_uppercase(), p.interval);
+        s.join(room.clone());
+        info!(id = %s.id, %room, "client subscribed to /quote room");
+      },
+    );
+
+    // unsubscribe → leave room
+    s.on(
+      "unsubscribe",
+      |s: SocketRef, Data::<SubscriptionPayload>(p)| async move {
+        let room = format!("{}:{}", p.symbol.to_uppercase(), p.interval);
+        s.leave(room.clone());
+        info!(id = %s.id, %room, "client unsubscribed from /quote room");
+      },
+    );
+
     s.on_disconnect(|s: SocketRef| async move {
       info!(id = %s.id, "client disconnected from /quote");
     });
