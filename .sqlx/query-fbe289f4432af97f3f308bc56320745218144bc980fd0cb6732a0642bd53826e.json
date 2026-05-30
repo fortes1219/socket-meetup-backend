@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n    SELECT\n      a.audit_id,\n      a.trading_pair_id,\n      p.symbol AS \"symbol!\",\n      a.action,\n      a.changed_by,\n      a.occurred_at\n    FROM trading_pair_audit a\n    INNER JOIN trading_pairs p ON p.id = a.trading_pair_id\n    ORDER BY a.occurred_at DESC, a.audit_id DESC\n    LIMIT $1\n    ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "audit_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "trading_pair_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "symbol!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "action",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "changed_by",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "occurred_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "fbe289f4432af97f3f308bc56320745218144bc980fd0cb6732a0642bd53826e"
+}

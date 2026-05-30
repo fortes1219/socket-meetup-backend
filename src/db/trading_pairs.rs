@@ -66,6 +66,49 @@ pub async fn list_admin(pool: &PgPool, include_disabled: bool) -> Result<Vec<Adm
   .context("trading_pairs list_admin failed")
 }
 
+/// `GET /admin/audit/recent` 的 row(A-3.3c)。
+///
+/// `symbol` 由 INNER JOIN trading_pairs by id 取得 —— audit FK 保證 pair 存在,
+/// **不過濾 `deleted_at IS NULL`**:否則 DELETE 之後 `removed` audit 會跟著消失,
+/// 看不出歷史紀錄當初指的是哪個 symbol。
+#[derive(Debug)]
+pub struct AuditEntryRow {
+  pub audit_id: Uuid,
+  pub trading_pair_id: Uuid,
+  pub symbol: String,
+  pub action: String,
+  pub changed_by: String,
+  pub occurred_at: DateTime<Utc>,
+}
+
+/// 最近 `limit` 筆 audit,排序 `occurred_at DESC, audit_id DESC`。
+///
+/// `audit_id` 為 UUIDv7(時序單調),當同 transaction 多筆 audit 撞同一 `occurred_at`
+/// 時做穩定 tie-breaker —— A-3.3b 已實證 PATCH 兩欄改的 `disabled`/`reordered` 會撞。
+/// handler 已保證 `1 <= limit <= 200`(>200 / <=0 → 400 invalid_param,不 clamp)。
+pub async fn list_recent_audit(pool: &PgPool, limit: i64) -> Result<Vec<AuditEntryRow>> {
+  sqlx::query_as!(
+    AuditEntryRow,
+    r#"
+    SELECT
+      a.audit_id,
+      a.trading_pair_id,
+      p.symbol AS "symbol!",
+      a.action,
+      a.changed_by,
+      a.occurred_at
+    FROM trading_pair_audit a
+    INNER JOIN trading_pairs p ON p.id = a.trading_pair_id
+    ORDER BY a.occurred_at DESC, a.audit_id DESC
+    LIMIT $1
+    "#,
+    limit,
+  )
+  .fetch_all(pool)
+  .await
+  .context("trading_pairs list_recent_audit failed")
+}
+
 // ─── 寫路徑(A-3.3b)───
 //
 // service 層的 typed domain error(§6.6 invariant #8:handler 不准直接 SQL)。

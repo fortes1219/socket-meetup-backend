@@ -9,7 +9,9 @@ use crate::{
   binance::rest::{self, ExchangeInfoError},
   db::{
     self,
-    trading_pairs::{AdminPairRow, PairPatch, PatchOutcome, PublicPairRow, TradingPairError},
+    trading_pairs::{
+      AdminPairRow, AuditEntryRow, PairPatch, PatchOutcome, PublicPairRow, TradingPairError,
+    },
   },
   error::AppError,
   socket,
@@ -222,4 +224,62 @@ pub async fn delete(
     .map_err(|_| AppError::CommittedBroadcastFailed)?;
 
   Ok(StatusCode::NO_CONTENT)
+}
+
+// ─── audit recent(A-3.3c)───
+
+const DEFAULT_AUDIT_LIMIT: i64 = 50;
+const MAX_AUDIT_LIMIT: i64 = 200;
+
+/// `GET /admin/audit/recent` query。
+///
+/// `limit` 省略 = 50;`<=0` 或 `>200` → 400 invalid_param(**不 clamp**)。
+/// 非 integer / 未知欄位 → `StrictQuery` 收斂成 400 invalid_param。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecentAuditQuery {
+  pub limit: Option<i64>,
+}
+
+/// `GET /admin/audit/recent` response item(§6.6 `AuditEntry`)。
+///
+/// `action` 維持 String —— 值空間 `added`/`enabled`/`disabled`/`removed`/`reordered`
+/// 由 migration 0003 的 `chk_trading_pair_audit_action` CHECK 在 DB 層保證,
+/// 前端 Zod literal-union 收斂(避免 backend 為 strong enum 擴 scope)。
+#[derive(Debug, Serialize)]
+pub struct AuditEntry {
+  pub audit_id: String,
+  pub trading_pair_id: String,
+  pub symbol: String,
+  pub action: String,
+  pub changed_by: String,
+  pub occurred_at: i64,
+}
+
+impl From<AuditEntryRow> for AuditEntry {
+  fn from(r: AuditEntryRow) -> Self {
+    Self {
+      audit_id: r.audit_id.to_string(),
+      trading_pair_id: r.trading_pair_id.to_string(),
+      symbol: r.symbol,
+      action: r.action,
+      changed_by: r.changed_by,
+      occurred_at: r.occurred_at.timestamp_millis(),
+    }
+  }
+}
+
+/// `GET /admin/audit/recent?limit` — 200 `AuditEntry[]`,排序 `occurred_at DESC, audit_id DESC`。
+///
+/// 純 read(無 emit / 無 mutation)。soft-deleted pair 的 audit 仍會回(§6.6 + guardrail #1)。
+pub async fn list_audit_recent(
+  State(pool): State<PgPool>,
+  StrictQuery(q): StrictQuery<RecentAuditQuery>,
+) -> Result<Json<Vec<AuditEntry>>, AppError> {
+  let limit = q.limit.unwrap_or(DEFAULT_AUDIT_LIMIT);
+  if !(1..=MAX_AUDIT_LIMIT).contains(&limit) {
+    return Err(AppError::InvalidParam);
+  }
+  let rows = db::trading_pairs::list_recent_audit(&pool, limit).await?;
+  Ok(Json(rows.into_iter().map(AuditEntry::from).collect()))
 }

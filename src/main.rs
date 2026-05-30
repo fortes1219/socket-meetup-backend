@@ -149,6 +149,7 @@ async fn main() -> Result<()> {
       "/trading-pairs/{id}",
       patch(api::trading_pairs::update).delete(api::trading_pairs::delete),
     )
+    .route("/audit/recent", get(api::trading_pairs::list_audit_recent))
     .route_layer(middleware::from_fn_with_state(
       app_state.clone(),
       api::admin::require_admin_token,
