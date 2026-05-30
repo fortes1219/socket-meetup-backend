@@ -49,6 +49,30 @@ impl FromRef<AppState> for SocketIo {
   }
 }
 
+/// 解析 `BINANCE_KLINE_SYMBOLS` 環境變數:逗號分隔,trim + uppercase,空字串略過,
+/// 首次出現順序保留 dedupe;最終 list 為空 → `anyhow::bail!`(app refuses to start)。
+///
+/// 範例:`" btcusdt , shibusdt ,, btcusdt "` → `["BTCUSDT", "SHIBUSDT"]`。
+fn parse_binance_kline_symbols(raw: &str) -> Result<Vec<String>> {
+  let mut seen = std::collections::HashSet::new();
+  let mut symbols = Vec::new();
+  for part in raw.split(',') {
+    let s = part.trim().to_uppercase();
+    if s.is_empty() {
+      continue;
+    }
+    if seen.insert(s.clone()) {
+      symbols.push(s);
+    }
+  }
+  if symbols.is_empty() {
+    anyhow::bail!(
+      "BINANCE_KLINE_SYMBOLS resolved to empty allowlist after trim/dedupe; refusing to start"
+    );
+  }
+  Ok(symbols)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
   // Load .env(本機 dev;production env 由外部注入,沒 .env 不 panic)
@@ -79,6 +103,20 @@ async fn main() -> Result<()> {
   let admin_token =
     std::env::var("ADMIN_TOKEN").map_err(|_| anyhow::anyhow!("ADMIN_TOKEN not set; check .env"))?;
 
+  // Binance K 線 ingestion allowlist:env 未設則用 code default(demo 開箱即用)。
+  // 空 list(全 trim 後為空)→ parse fn 直接 anyhow::bail!,app 拒絕啟動。
+  // P2:本階段 interval 固定 `1m`(symbol-only allowlist)。
+  let kline_symbols_raw = std::env::var("BINANCE_KLINE_SYMBOLS")
+    .unwrap_or_else(|_| "BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,DOGEUSDT,SHIBUSDT".to_string());
+  let kline_symbols = parse_binance_kline_symbols(&kline_symbols_raw)?;
+  const KLINE_INTERVAL: &str = "1m";
+  tracing::info!(
+    symbols = ?kline_symbols,
+    interval = KLINE_INTERVAL,
+    count = kline_symbols.len(),
+    "binance kline ingest allowlist resolved"
+  );
+
   // 共用 HTTP client:設 timeout,否則「upstream timeout → 502」只是紙上規格(guardrail #1)
   let http = reqwest::Client::builder()
     .timeout(std::time::Duration::from_secs(10))
@@ -88,46 +126,66 @@ async fn main() -> Result<()> {
   let (socketio_layer, io) = SocketIo::new_layer();
   socket::register_namespaces(&io);
 
-  // ─── Binance ingestion tasks ───
-  // Task A: REST 撈 500 筆 backfill(一次性)
-  let rest_pool = pool.clone();
-  let rest_http = http.clone();
-  let task_rest_base = rest_base.clone();
-  tokio::spawn(async move {
-    match binance::rest::fetch_klines(&rest_http, &task_rest_base, "BTCUSDT", "1m", 500).await {
-      Ok(klines) => {
-        tracing::info!(
-          count = klines.len(),
-          last_close = %klines.last().map(|k| k.close.as_str()).unwrap_or("(empty)"),
-          "REST fetched"
-        );
-        let mut ok = 0usize;
-        let mut err = 0usize;
-        for k in &klines {
-          match db::klines::upsert(&rest_pool, k).await {
-            Ok(_) => ok += 1,
-            Err(e) => {
-              tracing::error!(?e, symbol = %k.symbol, "REST kline upsert failed");
-              err += 1;
+  // ─── Binance ingestion tasks(per-symbol)───
+  // 每個 symbol 各自:Task A 一次性 REST backfill(500 根)+ Task B 常駐 WS reconnect loop。
+  // P6:per-symbol 獨立 tokio::spawn —— 單 symbol 失敗只 log,不影響其他 symbol。
+  for symbol in &kline_symbols {
+    // Task A: REST backfill
+    let rest_pool = pool.clone();
+    let rest_http = http.clone();
+    let rest_base_clone = rest_base.clone();
+    let symbol_for_rest = symbol.clone();
+    tokio::spawn(async move {
+      match binance::rest::fetch_klines(
+        &rest_http,
+        &rest_base_clone,
+        &symbol_for_rest,
+        KLINE_INTERVAL,
+        500,
+      )
+      .await
+      {
+        Ok(klines) => {
+          tracing::info!(
+            symbol = %symbol_for_rest,
+            count = klines.len(),
+            last_close = %klines.last().map(|k| k.close.as_str()).unwrap_or("(empty)"),
+            "REST fetched"
+          );
+          let mut ok = 0usize;
+          let mut err = 0usize;
+          for k in &klines {
+            match db::klines::upsert(&rest_pool, k).await {
+              Ok(_) => ok += 1,
+              Err(e) => {
+                tracing::error!(?e, symbol = %k.symbol, "REST kline upsert failed");
+                err += 1;
+              }
             }
           }
+          tracing::info!(symbol = %symbol_for_rest, upserted = ok, failed = err, "REST backfill persisted");
         }
-        tracing::info!(upserted = ok, failed = err, "REST backfill persisted");
+        Err(e) => tracing::error!(?e, symbol = %symbol_for_rest, "REST fetch failed"),
       }
-      Err(e) => tracing::error!(?e, "REST fetch failed"),
-    }
-  });
+    });
 
-  // Task B: WS subscribe btcusdt@kline_1m,closed ticks persist, all ticks emit `kline`
-  let ws_pool = pool.clone();
-  let ws_io = io.clone();
-  tokio::spawn(async move {
-    if let Err(e) =
-      binance::ws::subscribe_kline_stream(ws_pool, ws_io, &ws_base, "BTCUSDT", "1m").await
-    {
-      tracing::error!(?e, "WS stream failed");
-    }
-  });
+    // Task B: WS reconnect loop(per-symbol,內含 5s→60s monotonic backoff + stable-reset,
+    //         單 symbol failure log + 繼續;見 `binance::ws::run_with_reconnect` doc)。
+    let ws_pool = pool.clone();
+    let ws_io = io.clone();
+    let ws_base_clone = ws_base.clone();
+    let symbol_for_ws = symbol.clone();
+    tokio::spawn(async move {
+      binance::ws::run_with_reconnect(
+        ws_pool,
+        ws_io,
+        ws_base_clone,
+        symbol_for_ws,
+        KLINE_INTERVAL.to_string(),
+      )
+      .await;
+    });
+  }
 
   // ─── HTTP server ───
   let app_state = AppState {

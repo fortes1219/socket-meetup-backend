@@ -16,6 +16,7 @@ services:
       RUST_LOG: ${RUST_LOG:-info,rust_api=debug}
       BINANCE_REST_BASE: ${BINANCE_REST_BASE:-https://api.binance.com}
       BINANCE_WS_BASE: ${BINANCE_WS_BASE:-wss://stream.binance.com:9443}
+      BINANCE_KLINE_SYMBOLS: ${BINANCE_KLINE_SYMBOLS:-BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,DOGEUSDT,SHIBUSDT}
     ports:
       - "3000:3000"
 

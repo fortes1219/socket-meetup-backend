@@ -71,6 +71,7 @@
 | side effects | 無 |
 | TanStack Query | key 建議:`["klines", { symbol, interval, limit, endTime }]`(`endTime` 為 `init` 撈最新時要省略);不設定 `staleTime: 0`,getBars 由 klinecharts 觸發即可 |
 | 邊界 | `limit` 預設 500;`endTime` 省略 = init(最新 `limit` 筆);提供 = forward(該 ms 之前 `limit` 筆);**不支援 backward**(§6.7 規則,不在 frontend 動) |
+| 覆蓋 symbol | 本 handler **不檢查 symbol 是否在 allowlist** —— 純 DB query。backend `BINANCE_KLINE_SYMBOLS`(預設 BTCUSDT / ETHUSDT / BNBUSDT / SOLUSDT / DOGEUSDT / SHIBUSDT)**只控制 startup REST backfill + 持續 WS stream 覆蓋範圍**;DB 內可能還有舊 symbol 的歷史資料(例如過去在 allowlist),REST 仍會照回。allowlist 外且 DB 也沒資料 → 自然 `200 []`。**前端不可把「在 allowlist 外」當「保證 []」**。詳見 §8 #1 |
 
 ### 3.3 `GET /api/v1/trading-pairs`
 
@@ -341,8 +342,8 @@ export type QuoteKlineEvent = z.infer<typeof QuoteKlineEventSchema>;
 **`/quote` **絕對不**直接吐 klinecharts `KLineData`:** wire 是 `QuoteKlineEvent`(string OHLCV);klinecharts adapter 才轉(§6)。**socket 層不 import klinecharts。**
 
 **已知行為:**
-- 連上 `/quote` 但未 `subscribe` → 收不到任何 `kline` event(room 隔離,本 session runtime 已驗)
-- subscribe 不存在上游的 room(例 `ETHUSDT:1m`)→ 加入 room 成功,但**沒有 tick**(見 §7 Known limitations)
+- 連上 `/quote` 但未 `subscribe` → 收不到任何 `kline` event(room 隔離)
+- subscribe **`BINANCE_KLINE_SYMBOLS` allowlist 外**的 symbol(例 `ADAUSDT:1m`,非預設 6 個之一)→ 加入 room 成功,但**沒有 tick**(見 §8 #1)
 - 斷線重連後,**前次 subscribe 不會自動恢復**;前端需要在 `connect` event 重新 emit
 
 ---
@@ -571,7 +572,7 @@ ARCHITECTURE.md §5.8 定義跨 tab 的 BroadcastChannel + leader 接力 protoco
 
 | # | 限制 | 影響 |
 |---|---|---|
-| 1 | **`/quote` 上游硬編 `BTCUSDT:1m`**(單一 stream) | subscribe 其他 symbol/interval 加得進 room 但 **沒有 tick**;admin 啟用 ETHUSDT 等不會自動產生 realtime。UI 不可把「沒 tick」當「socket 壞掉」。動態 fan-in 留後 |
+| 1 | **`BINANCE_KLINE_SYMBOLS` 決定後端 ingestion 範圍**(預設 BTCUSDT / ETHUSDT / BNBUSDT / SOLUSDT / DOGEUSDT / SHIBUSDT,interval 固定 `1m`) | Allowlist 控制的是 **startup REST backfill + 持續 WS stream** 的 (symbol, interval) 集合。**REST `GET /api/v1/klines` 不檢查 allowlist** —— 純 DB query,允許回到 allowlist 外 symbol 的舊資料(若 DB 曾累積過);DB 無資料才自然 `[]`。**前端不可把 allowlist 外的回應當「保證 []」**。`/quote subscribe` allowlist 外的 room:**可成功加入,但無 realtime tick**(emit 只從 upstream stream 出,allowlist 嚴格控制)。`trading_pairs` admin **僅控制 UI 顯示,與 ingestion 解耦** —— admin DELETE 某 symbol 不會關掉 stream;admin POST 非 allowlist symbol 也不會自動生 realtime。Allowlist 變動需 backend 重啟 |
 | 2 | **`subscribe`/`unsubscribe` 無 ack** | 無錯誤回報、無確認時機;前端唯一 debug 依據 = server log + client-side counter。前端拍按鈕後要假設「已送出」,不要等 promise |
 | 3 | **server 不 validate `SubscriptionPayload`**(無 `deny_unknown_fields`、無 trim) | `{ symbol, interval: "1m ", extra: "x" }`:`extra` 忽略;trailing space 讓 room 變 `"BTCUSDT:1m "`(與 emit room `"BTCUSDT:1m"` 不符)→ **silent fail**,server 不報錯。**前端必須自己 normalize**(`symbol.trim().toUpperCase()`、`interval` trim) |
 | 4 | **`/api/v1/klines` query parse 失敗 = 400 plain-text**,非 `ErrorBody` JSON | 與 `/admin/*` 不一致;前端 fetch 後判 `content-type`,plain-text 路徑當 `invalid_param` 處理 |
