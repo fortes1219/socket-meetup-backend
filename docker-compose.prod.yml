@@ -1,6 +1,14 @@
 name: socket-meetup-prod
 
 services:
+  frontend:
+    build:
+      context: ${FRONTEND_BUILD_CONTEXT:?FRONTEND_BUILD_CONTEXT required}
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:80"
+
   rust-api:
     build:
       context: .
